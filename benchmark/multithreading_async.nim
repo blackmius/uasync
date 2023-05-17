@@ -8,7 +8,7 @@
 # threads: 12 count: 15 899 753 count per thread: 1 324 979.416
 
 import atomics
-import nimuring/async
+import uasync
 
 var i: Atomic[int]
 i.store(0)

@@ -1,11 +1,11 @@
-when defined(nimuring):
-  import nimuring/async
-  # coro: 1 time: 1514ms
-  # coro: 10 time: 352ms
-  # coro: 100 time: 116ms
-  # coro: 1000 time: 111ms
-  # coro: 100000 time: 156ms
-  # coro: 1000000 time: 155ms
+when defined(uasync):
+  import uasync
+  # coro: 1 time: 142ms
+  # coro: 10 time: 121ms
+  # coro: 100 time: 122ms
+  # coro: 1000 time: 128ms
+  # coro: 100000 time: 215ms
+  # coro: 1000000 time: 425ms
 else:
   import asyncdispatch
   # coro: 1 time: 143ms

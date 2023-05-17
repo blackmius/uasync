@@ -1,16 +1,16 @@
-when defined(nimuring):
-  import nimuring/async
-# (seconds: 2, nanosecond: 898271)
-# (seconds: 2, nanosecond: 712721)
-# (seconds: 2, nanosecond: 68105)
-# (seconds: 2, nanosecond: 225934)
-# (seconds: 2, nanosecond: 120265)
-# (seconds: 2, nanosecond: 721209)
-# (seconds: 2, nanosecond: 729402)
-# (seconds: 2, nanosecond: 711149)
-# (seconds: 2, nanosecond: 704166)
-# (seconds: 2, nanosecond: 177247)
-# (seconds: 2, nanosecond: 633842)
+when defined(uasync):
+  import uasync
+# (seconds: 2, nanosecond: 122610)
+# (seconds: 2, nanosecond: 68425)
+# (seconds: 2, nanosecond: 110762)
+# (seconds: 2, nanosecond: 101117)
+# (seconds: 2, nanosecond: 73077)
+# (seconds: 2, nanosecond: 99900)
+# (seconds: 2, nanosecond: 102685)
+# (seconds: 2, nanosecond: 62653)
+# (seconds: 2, nanosecond: 107019)
+# (seconds: 2, nanosecond: 105083)
+# (seconds: 2, nanosecond: 110713)
 else:
   import std/asyncdispatch
 # (seconds: 2, nanosecond: 1366304)

@@ -1,4 +1,4 @@
-import nimuring/async
+import uasync
 
 import std/monotimes, times
 

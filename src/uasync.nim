@@ -1,7 +1,7 @@
 import std/[deques, monotimes, asyncfutures, asyncstreams]
 import times, os, posix
 
-import io_uring, queue, ops
+import nimuring
 
 ## Сохранинение Event в памяти GC
 ## Ускоряет общий код на 50%
@@ -27,6 +27,9 @@ proc dealloc[T](p: var Pool[T], ind: int) =
 proc get[T](p: var Pool[T], ind: int): ptr T =
   result = addr p.arr[ind]
 
+proc waiting[T](p: var Pool[T]): int =
+  result = p.arr.len - p.freelist.len
+
 
 type
   Callback = proc (res: Cqe): bool {.gcsafe, closure.}
@@ -38,6 +41,7 @@ type
   Loop = ref object
     q: Queue
     sqes: Deque[Sqe]
+    cqes: seq[Cqe]
     callbacks: Deque[proc () {.gcsafe.}]
     events: Pool[Event]
 
@@ -47,6 +51,7 @@ proc newLoop(): owned Loop =
   result = new(Loop)
   result.q = newQueue(4096, {SETUP_SQPOLL})
   result.sqes = initDeque[Sqe](4096)
+  result.cqes = newSeq[Cqe](result.q.params.cqEntries)
   result.events = newPool[Event]()
 
 proc setLoop*(loop: sink Loop) =
@@ -70,27 +75,29 @@ template drainQueue(loop: Loop) =
       break
     sqe[] = loop.sqes.popFirst()
 
-proc poll*() {.gcsafe.} =
+proc poll*(): bool {.gcsafe, discardable.} =
   let loop = getLoop()
   loop.drainQueue()
-  loop.q.submit()
-  while loop.callbacks.len != 0:
+  var waitNr = loop.q.submit().uint
+  let callbacksCount = loop.callbacks.len
+  for _ in 1..callbacksCount:
     let cb = loop.callbacks.popFirst()
     cb()
-  if loop.q.cqReady() == 0:
-    return
-  var cqes = loop.q.copyCqes(1)
-  # echo loop.q.sqReady
+  if loop.callbacks.len != 0:
+    waitNr = loop.q.cqReady()
+  let ready = loop.q.copyCqes(loop.cqes, waitNr)
   # new sqes can be added only from callbacks
   # so it doesn't make sense to skip the iteration
-  for cqe in cqes:
+  for i in 0..<ready:
+    let cqe = loop.cqes[i]
     let ev = loop.events.get(cqe.userData.int)
     if likely(not ev.cb(cqe)):
       loop.events.dealloc(cqe.userData.int)
+  return loop.callbacks.len > 0 or loop.events.waiting() > 0
 
 proc runForever*() {.gcsafe.} =
-  while true:
-    poll()
+  while poll():
+    discard
 
 type AsyncFD* = distinct int
 
@@ -207,6 +214,9 @@ proc recv*(fd: AsyncFD; buffer: pointer; len: int; flags: cint = 0): owned(Futur
 
 proc sleepAsync*(ms: int | float): owned(Future[void]) =
   var retFuture = newFuture[void]("timeout")
+  if ms == 0:
+    callSoon(proc () = retFuture.complete())
+    return retFuture
   let ns = (ms * 1_000_000).int64
   let after = getMonoTime().ticks + ns
   var ts = create(Timespec)
