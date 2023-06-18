@@ -93,11 +93,9 @@ proc poll*(): bool {.gcsafe, discardable.} =
     let ev = loop.events.get(cqe.userData.int)
     if likely(not ev.cb(cqe)):
       loop.events.dealloc(cqe.userData.int)
-  GC_fullCollect()
   return loop.callbacks.len > 0 or loop.events.waiting() > 0
 
 proc runForever*() {.gcsafe.} =
-  GC_disableMarkAndSweep()
   while poll():
     discard
 
