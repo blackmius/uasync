@@ -2,7 +2,7 @@
 
 version       = "0.1.0"
 author        = "dterlyakhin"
-description   = "lightweight async for fast"
+description   = "lightweight async dispatcher"
 license       = "MIT"
 srcDir        = "src"
 
