@@ -22,7 +22,7 @@ const coros = 1000
 
 proc worker() {.thread.} =
   for _ in 0..<coros:
-    asyncCheck run()
+    discard run()
   runForever()
 
 let cpus = 12
@@ -31,8 +31,8 @@ for i in 0..pool.high:
   pool[i].createThread(worker)
   pool[i].pinToCpu(i)
 proc setupTimer() =
-  sleepAsync(30_000).addCallback(
-    proc () =
+  sleepAsync(30_000).then(
+    proc (err: ref Exception) =
       let rps = int(i.load/30)
       echo "threads: ", cpus, " count: ", rps, " count per thread: ", rps/cpus
       i.store(0)
