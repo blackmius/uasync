@@ -18,11 +18,11 @@ else:
   discard getGlobalDispatcher()
 
 proc nop(): Future[void] =
-  var retfuture = newFuture[void]("nop")
+  new result
+  let res = result
   proc cb() =
-    retfuture.complete()
+    res.complete()
   callSoon(cb)
-  return retfuture
 
 import std/monotimes, times
 
@@ -36,7 +36,7 @@ proc run() {.async.} =
 for coros in @[1, 10, 100, 1000, 100_000, 1_000_000]:
   i = 0
   for _ in 0..coros:
-    asyncCheck run()
+    discard run()
   let start = getMonoTime()
   while i < 1_000_000:
     poll()
