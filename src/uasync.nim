@@ -1,7 +1,8 @@
-import std/[deques, monotimes, asyncfutures, asyncstreams]
+import std/[deques, monotimes]
 import times, os, posix
 
 import nimuring
+import yasync
 
 ## Сохранинение Event в памяти GC
 ## Ускоряет общий код на 50%
@@ -62,10 +63,9 @@ proc getLoop*(): Loop =
     setLoop(newLoop())
   result = gLoop
 
-proc queueMicrotask*(cbproc: proc () {.gcsafe.}) {.gcsafe.} =
+proc callSoon*(cbproc: proc () {.closure, gcsafe.}) {.gcsafe.} =
   let loop = getLoop()
   loop.callbacks.addLast(cbproc)
-setCallSoonProc(queueMicrotask)
     
 
 template drainQueue(loop: Loop) =
@@ -78,13 +78,16 @@ template drainQueue(loop: Loop) =
 proc poll*(): bool {.gcsafe, discardable.} =
   let loop = getLoop()
   loop.drainQueue()
-  var waitNr = loop.q.submit().uint
+  discard loop.q.submit()
   let callbacksCount = loop.callbacks.len
   for _ in 1..callbacksCount:
     let cb = loop.callbacks.popFirst()
     cb()
-  if loop.callbacks.len != 0:
+  var waitNr: uint = 0
+  if unlikely(loop.callbacks.len > 0):
     waitNr = loop.q.cqReady()
+  elif likely(loop.events.waiting() > 0):
+    waitNr = 1
   let ready = loop.q.copyCqes(loop.cqes, waitNr)
   # new sqes can be added only from callbacks
   # so it doesn't make sense to skip the iteration
@@ -134,89 +137,129 @@ proc event*(cb: Callback): ptr Sqe {.discardable, inline.} =
 
 proc nop*(): owned(Future[void]) =
   ## A simple, but nevertheless useful request
-  var retFuture = newFuture[void]("nop")
+  new result
+  let res = result
   proc cb(cqe: Cqe): bool =
-    retFuture.complete()
-  event(cb)
-  return retFuture
+    res.complete()
+  discard event(cb)
+
+proc close*(fd: AsyncFD): owned(Future[void]) =
+  new result
+  let res = result
+  proc cb(cqe: Cqe): bool =
+    if cqe.res < 0:
+      res.fail(newException(OSError, osErrorMsg(OSErrorCode(cqe.res))))
+    else:
+      res.complete()
+  discard event(cb).close(cast[SocketHandle](fd))
 
 proc write*(fd: AsyncFD; buffer: pointer; len: int; offset: int = 0): owned(Future[void]) =
-  var retFuture = newFuture[void]("write")
+  new result
+  let res = result
   proc cb(cqe: Cqe): bool =
     if cqe.res < 0:
-      retFuture.fail(newException(OSError, osErrorMsg(OSErrorCode(cqe.res))))
+      res.fail(newException(OSError, osErrorMsg(OSErrorCode(cqe.res))))
     else:
-      retFuture.complete()
+      res.complete()
   # TODO: probably buffer can leak if it would destroyed before io_uring it consume
-  event(cb).write(cast[FileHandle](fd), buffer, len, offset)
-  return retFuture
+  discard event(cb).write(cast[FileHandle](fd), buffer, len, offset)
 
 proc read*(fd: AsyncFD; buffer: pointer; len: int; offset: int = 0): owned(Future[int]) =
-  var retFuture = newFuture[int]("read")
+  new result
+  let res = result
   proc cb(cqe: Cqe): bool =
     if cqe.res < 0:
-      retFuture.fail(newException(OSError, osErrorMsg(OSErrorCode(cqe.res))))
+      res.fail(newException(OSError, osErrorMsg(OSErrorCode(cqe.res))))
     else:
-      retFuture.complete(cqe.res)
-  event(cb).read(cast[FileHandle](fd), buffer, len, offset)
-  return retFuture
+      res.complete(cqe.res)
+  discard event(cb).read(cast[FileHandle](fd), buffer, len, offset)
 
 proc accept*(fd: AsyncFD): owned(Future[AsyncFD]) =
-  var retFuture = newFuture[AsyncFD]("accept")
-  var accept_addr: SockAddr
-  var accept_addr_len: SockLen
+  new result
+  let res = result
+  var accept_addr = create(SockAddr)
+  var accept_addr_len = create(SockLen)
+  proc cb(cqe: Cqe): bool =
+    dealloc(accept_addr)
+    dealloc(accept_addr_len)
+    if cqe.res < 0:
+      res.fail(newException(OSError, osErrorMsg(OSErrorCode(cqe.res))))
+    else:
+      res.complete(cast[AsyncFd](cqe.res))
+  discard event(cb).accept(cast[SocketHandle](fd), accept_addr, accept_addr_len, O_CLOEXEC)
+
+# proc acceptStream*(fd: AsyncFD): owned(FutureStream[AsyncFD]) =
+#   var retFuture = newFutureStream[AsyncFD]("accept")
+#   var accept_addr: SockAddr
+#   var accept_addr_len: SockLen
+#   proc cb(cqe: Cqe): bool {.gcsafe.} =
+#     if cqe.res < 0:
+#       retFuture.complete()
+#       return true
+#     else:
+#       discard retFuture.write(cast[AsyncFD](cqe.res))
+#       if not cqe.flags.contains(CQE_F_MORE):
+#         # application should look at the CQE flags and see if
+#         # IORING_CQE_F_MORE is set on completion as an indication of
+#         # whether or not the accept request will generate further CQEs.
+#         event(cb).accept_multishot(cast[SocketHandle](fd), addr accept_addr, addr accept_addr_len, O_CLOEXEC)
+#   event(cb).accept_multishot(cast[SocketHandle](fd), addr accept_addr, addr accept_addr_len, O_CLOEXEC)
+#   return retFuture
+
+import nativesockets
+
+proc connect*(fd: AsyncFD; address: string, port: int): owned(Future[void]) =
+  var ai = getAddrInfo(address, port.Port)
+  new result
+  let res = result
   proc cb(cqe: Cqe): bool =
     if cqe.res < 0:
-      retFuture.fail(newException(OSError, osErrorMsg(OSErrorCode(cqe.res))))
+      res.fail(newException(OSError, osErrorMsg(OSErrorCode(cqe.res))))
     else:
-      retFuture.complete(cast[AsyncFd](cqe.res))
-  event(cb).accept(cast[SocketHandle](fd), addr accept_addr, addr accept_addr_len, O_CLOEXEC)
-  return retFuture
-
-proc acceptStream*(fd: AsyncFD): owned(FutureStream[AsyncFD]) =
-  var retFuture = newFutureStream[AsyncFD]("accept")
-  var accept_addr: SockAddr
-  var accept_addr_len: SockLen
-  proc cb(cqe: Cqe): bool {.gcsafe.} =
-    if cqe.res < 0:
-      retFuture.complete()
-      return true
-    else:
-      discard retFuture.write(cast[AsyncFD](cqe.res))
-      if not cqe.flags.contains(CQE_F_MORE):
-        # application should look at the CQE flags and see if
-        # IORING_CQE_F_MORE is set on completion as an indication of
-        # whether or not the accept request will generate further CQEs.
-        event(cb).accept_multishot(cast[SocketHandle](fd), addr accept_addr, addr accept_addr_len, O_CLOEXEC)
-  event(cb).accept_multishot(cast[SocketHandle](fd), addr accept_addr, addr accept_addr_len, O_CLOEXEC)
-  return retFuture
+      res.complete()
+  discard event(cb).connect(cast[SocketHandle](fd), ai.ai_addr, ai.ai_addrlen)
 
 proc send*(fd: AsyncFD; buffer: pointer; len: int; flags: cint = 0): owned(Future[void]) =
-  var retFuture = newFuture[void]("send")
+  new result
+  let res = result
   proc cb(cqe: Cqe): bool =
     if cqe.res < 0:
-      retFuture.fail(newException(OSError, osErrorMsg(OSErrorCode(cqe.res))))
+      res.fail(newException(OSError, osErrorMsg(OSErrorCode(cqe.res))))
     else:
-      retFuture.complete()
+      res.complete()
   # TODO: probably buffer can leak if it would destroyed before io_uring it consume
-  event(cb).send(cast[SocketHandle](fd), buffer, len, flags)
-  return retFuture
+  discard event(cb).send(cast[SocketHandle](fd), buffer, len, flags)
+
+proc send*(fd: AsyncFD; text: string): owned(Future[void]) =
+  return send(fd, text[0].addr, text.len)
 
 proc recv*(fd: AsyncFD; buffer: pointer; len: int; flags: cint = 0): owned(Future[int]) =
-  var retFuture = newFuture[int]("read")
+  new result
+  let res = result
   proc cb(cqe: Cqe): bool =
     if cqe.res < 0:
-      retFuture.fail(newException(OSError, osErrorMsg(OSErrorCode(cqe.res))))
+      res.fail(newException(OSError, osErrorMsg(OSErrorCode(cqe.res))))
     else:
-      retFuture.complete(cqe.res)
-  event(cb).recv(cast[SocketHandle](fd), buffer, len, flags)
-  return retFuture
+      res.complete(cqe.res)
+  discard event(cb).recv(cast[SocketHandle](fd), buffer, len, flags)
+
+proc recv*(fd: AsyncFD; size: int): owned(Future[string])  =
+  # todo: rewrite using {.async.}
+  # Error: undeclared field: '<h>1' for type recv:iter.Env_yasync.nim_recv:iter
+  new result
+  let res = result
+  var str = newString(size)
+  recv(fd, str[0].addr, size).then(proc (len: int, err: ref Exception) =
+    str.setLen(len)
+    res.complete(str)
+  )
 
 proc sleepAsync*(ms: int | float): owned(Future[void]) =
-  var retFuture = newFuture[void]("timeout")
+  new result
+  let res = result
   if ms == 0:
-    callSoon(proc () = retFuture.complete())
-    return retFuture
+    callSoon(proc () = res.complete())
+    return res
   let ns = (ms * 1_000_000).int64
   let after = getMonoTime().ticks + ns
   var ts = create(Timespec)
@@ -224,12 +267,10 @@ proc sleepAsync*(ms: int | float): owned(Future[void]) =
   ts.tv_nsec = after.int mod 1_000_000_000
   proc cb(cqe: Cqe): bool =
     dealloc(ts)
-    retFuture.complete()
+    res.complete()
   # we are using TIMEOUT_ABS to avoid time mismatch
   # if sqe enqueued not now (sqe is overflowed)
-  event(cb).timeout(ts, 0, {TIMEOUT_ABS})
-  return retFuture
+  discard event(cb).timeout(ts, 0, {TIMEOUT_ABS})
 
-import std/async
-export async
+export yasync
 export Cqe
