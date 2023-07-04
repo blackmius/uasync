@@ -11,3 +11,4 @@ srcDir        = "src"
 
 requires "nim >= 1.6.10"
 requires "https://github.com/blackmius/nimuring"
+requires "https://github.com/yglukhov/yasync"
