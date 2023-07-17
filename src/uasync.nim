@@ -254,6 +254,38 @@ proc recv*(fd: AsyncFD; size: int): owned(Future[string])  =
     res.complete(str)
   )
 
+type
+  Conn* = object
+    name: ref Sockaddr_storage
+    len: SockLen
+  Msg* = object
+    data*: string
+    conn*: Conn
+
+proc recvmsg*(fd: AsyncFD; size: int): owned(Future[ref Msg]) =
+  new result
+  let res = result
+
+  var msg = new Msg
+  msg.conn.name = new Sockaddr_storage
+  msg.data = newString(size)
+  var tmsg = new Tmsghdr
+  tmsg.msg_name = msg.conn.name.addr
+  tmsg.msg_namelen = sizeof(Sockaddr_storage).SockLen
+  var iov = new IOVec
+  iov.iov_base = msg.data[0].addr
+  iov.iov_len = size.uint
+  tmsg.msg_iov = cast[ptr IOVec](iov)
+  tmsg.msg_iovlen = 1
+
+  proc cb(cqe: Cqe): bool =
+    if cqe.res < 0:
+      res.fail(newException(OSError, osErrorMsg(OSErrorCode(cqe.res))))
+    else:
+      res.complete(msg)
+
+  discard event(cb).recvmsg(cast[SocketHandle](fd), cast[ptr Tmsghdr](tmsg), 0)
+
 proc sleepAsync*(ms: int | float): owned(Future[void]) =
   new result
   let res = result

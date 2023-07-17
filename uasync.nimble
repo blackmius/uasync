@@ -9,6 +9,7 @@ srcDir        = "src"
 
 # Dependencies
 
-requires "nim >= 1.6.10"
+requires "nim >= 2.0"
 requires "https://github.com/blackmius/nimuring"
 requires "https://github.com/yglukhov/yasync"
+requires "bearssl"
