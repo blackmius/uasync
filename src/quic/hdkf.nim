@@ -50,13 +50,13 @@ proc hdkfExpandLabel(key: string; label: string; len: int): string =
   ## which in this case are preceded by a single-byte of length info.
   ## 
   ## FROM https://quic.xargs.org/#client-initial-keys-calc
-  var data = (len shr 8).char & len.char & (label.len + 6).char & "tls13 " & label & 0.char & 1.char
-  
+  ## 
   result = newString(len)
   var h: HmacContext
   var hk: HmacKeyContext
   hmacKeyInit(hk, sha256Vtable.addr, key[0].addr, key.len.uint)
   hmacInit(h, hk, len.uint)
+  let data = (len shr 8).char & len.char & (label.len + 6).char & "tls13 " & label & 0.char & 1.char
   hmacUpdate(h, data[0].addr, data.len.uint)
   assert hmacOut(h, result[0].addr) > 0
 
@@ -69,27 +69,25 @@ proc hdkfExpandLabel(key: string; label: string; len: int): string =
   # result = newString(len)
   # assert hkdfProduce(h, nil, 0, result[0].addr, result.len.uint) > 0
 
-let initial_salt = "38762cf7f55934b34d179ae6a4c80cadccbb7f0a".parseHexStr
-let initial_random = "0001020304050607".parseHexStr
-let initial_secret = hdkfExtract(initial_salt, initial_random)
-echo "initial_secret=", initial_secret.toHex
-let client_secret = hdkfExpandLabel(initial_secret, "client in", 32)
-echo "client_secret=", client_secret.toHex
-let server_secret = hdkfExpandLabel(initial_secret, "server in", 32)
-echo "server_secret=", server_secret.toHex
+when isMainModule:
+  let initial_salt = "38762cf7f55934b34d179ae6a4c80cadccbb7f0a".parseHexStr
+  let initial_random = "0001020304050607".parseHexStr
+  let initial_secret = hdkfExtract(initial_salt, initial_random)
+  let client_secret = hdkfExpandLabel(initial_secret, "client in", 32)
+  let server_secret = hdkfExpandLabel(initial_secret, "server in", 32)
+  let client_key = hdkfExpandLabel(client_secret, "quic key", 16)
+  let server_key = hdkfExpandLabel(server_secret, "quic key", 16)
+  let client_iv = hdkfExpandLabel(client_secret, "quic iv", 12)
+  let server_iv = hdkfExpandLabel(server_secret, "quic iv", 12)
+  let client_hp_key = hdkfExpandLabel(client_secret, "quic hp", 16)
+  let server_hp_key = hdkfExpandLabel(server_secret, "quic hp", 16)
 
-
-let client_key = hdkfExpandLabel(client_secret, "quic key", 16)
-echo "client_key=", client_key.toHex
-let server_key = hdkfExpandLabel(server_secret, "quic key", 16)
-echo "server_key=", server_key.toHex
-
-let client_iv = hdkfExpandLabel(client_secret, "quic iv", 12)
-echo "client_iv=", client_iv.toHex
-let server_iv = hdkfExpandLabel(server_secret, "quic iv", 12)
-echo "server_iv=", server_iv.toHex
-
-let client_hp_key = hdkfExpandLabel(client_secret, "quic hp", 16)
-echo "client_hp_key=", client_hp_key.toHex
-let server_hp_key = hdkfExpandLabel(server_secret, "quic hp", 16)
-echo "server_hp_key=", server_hp_key.toHex
+  echo "initial_secret=", initial_secret.toHex
+  echo "client_secret=", client_secret.toHex
+  echo "server_secret=", server_secret.toHex
+  echo "client_key=", client_key.toHex
+  echo "server_key=", server_key.toHex
+  echo "client_iv=", client_iv.toHex
+  echo "server_iv=", server_iv.toHex
+  echo "client_hp_key=", client_hp_key.toHex
+  echo "server_hp_key=", server_hp_key.toHex
