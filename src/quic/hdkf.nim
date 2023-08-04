@@ -1,7 +1,7 @@
 import bearssl
 import strutils
 
-proc hdkfExtract(salt: string; ikm: string): string =
+proc hdkfExtract*(salt: string; ikm: string): string =
   ## RFC 5869 section 2.2
   ## 
   ## HKDF-Extract(salt, IKM) -> PRK
@@ -28,7 +28,7 @@ proc hdkfExtract(salt: string; ikm: string): string =
   hmacUpdate(h, ikm[0].addr, ikm.len.uint)
   assert hmacOut(h, result[0].addr) > 0
 
-proc hdkfExpandLabel(key: string; label: string; len: int): string =
+proc hdkfExpandLabel*(key: string; label: string; len: int): string =
   ### RFC 8446 section 7.1
   ##
   ## The key derivation process makes use of the HKDF-Extract and
@@ -56,7 +56,7 @@ proc hdkfExpandLabel(key: string; label: string; len: int): string =
   var hk: HmacKeyContext
   hmacKeyInit(hk, sha256Vtable.addr, key[0].addr, key.len.uint)
   hmacInit(h, hk, len.uint)
-  let data = (len shr 8).char & len.char & (label.len + 6).char & "tls13 " & label & 0.char & 1.char
+  let data = (len shr 8).char & len.char & label.len.char & label & 0.char & 1.char
   hmacUpdate(h, data[0].addr, data.len.uint)
   assert hmacOut(h, result[0].addr) > 0
 
@@ -73,14 +73,14 @@ when isMainModule:
   let initial_salt = "38762cf7f55934b34d179ae6a4c80cadccbb7f0a".parseHexStr
   let initial_random = "0001020304050607".parseHexStr
   let initial_secret = hdkfExtract(initial_salt, initial_random)
-  let client_secret = hdkfExpandLabel(initial_secret, "client in", 32)
-  let server_secret = hdkfExpandLabel(initial_secret, "server in", 32)
-  let client_key = hdkfExpandLabel(client_secret, "quic key", 16)
-  let server_key = hdkfExpandLabel(server_secret, "quic key", 16)
-  let client_iv = hdkfExpandLabel(client_secret, "quic iv", 12)
-  let server_iv = hdkfExpandLabel(server_secret, "quic iv", 12)
-  let client_hp_key = hdkfExpandLabel(client_secret, "quic hp", 16)
-  let server_hp_key = hdkfExpandLabel(server_secret, "quic hp", 16)
+  let client_secret = hdkfExpandLabel(initial_secret, "tls13 client in", 32)
+  let server_secret = hdkfExpandLabel(initial_secret, "tls13 server in", 32)
+  let client_key = hdkfExpandLabel(client_secret, "tls13 quic key", 16)
+  let server_key = hdkfExpandLabel(server_secret, "tls13 quic key", 16)
+  let client_iv = hdkfExpandLabel(client_secret, "tls13 quic iv", 12)
+  let server_iv = hdkfExpandLabel(server_secret, "tls13 quic iv", 12)
+  let client_hp_key = hdkfExpandLabel(client_secret, "tls13 quic hp", 16)
+  let server_hp_key = hdkfExpandLabel(server_secret, "tls13 quic hp", 16)
 
   echo "initial_secret=", initial_secret.toHex
   echo "client_secret=", client_secret.toHex

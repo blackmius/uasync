@@ -1,7 +1,7 @@
 import net
 import strformat
 
-import quic
+import quic/quic
 import uasync
 
 var server = newSocket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)

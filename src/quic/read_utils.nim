@@ -5,6 +5,11 @@ proc read*[T](offset: var ptr): T {.inline.} =
   result = cast[ptr T](offset)[]
   offset = offset + sizeof(T)
 
+proc readSeq*(offset: ptr, len: SomeNumber): seq[byte] {.inline.} =
+  result = newSeq[byte](len)
+  if len > 0:
+    copyMem(result[0].addr, offset, len)
+
 proc readSeq*(offset: var ptr, len: SomeNumber): seq[byte] {.inline.} =
   result = newSeq[byte](len)
   if len > 0:

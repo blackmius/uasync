@@ -195,15 +195,47 @@ type
       retry: PacketRetry
 
 
+import strutils
+import hdkf
+
 proc readFrame(offset: var ptr): Frame =
   let frameType = read[byte](offset)
   echo frameType.toHex
   result = Frame()
 
-type InitialKeys = object
+type
+  Secret = object
+    secret: string
+    key: string
+    iv: string
+    hp: string
+  InitialKeys = object
+    client: Secret
+    server: Secret
   
-proc getInitialKeys(): InitialKeys =
+
+const
+  salt29 = "38762cf7f55934b34d179ae6a4c80cadccbb7f0a".parseHexStr
+  salt30 = "afbfec289993d24c9e9786f19c6111e04390a899".parseHexStr
+
+proc getInitialKeys(header: PacketInitial): InitialKeys =
+  # TODO: поэкспериментировать с тем чтобы передавать отдельно
+  # header.version и header.destination
   result = InitialKeys()
+  let initial_salt = if (header.version and 0xff000000.uint32) > 0:
+      salt29
+    else:
+      salt30
+  let initial_random = cast[string](header.destination)
+  let initial_secret = hdkfExtract(initial_salt, initial_random)
+  result.client.secret = hdkfExpandLabel(initial_secret, "tls13 client in", 32)
+  result.server.secret = hdkfExpandLabel(initial_secret, "tls13 server in", 32)
+  result.client.key = hdkfExpandLabel(result.client.secret, "tls13 quic key", 16)
+  result.server.key = hdkfExpandLabel(result.server.secret, "tls13 quic key", 16)
+  result.client.iv = hdkfExpandLabel(result.client.secret, "tls13 quic iv", 12)
+  result.server.iv = hdkfExpandLabel(result.server.secret, "tls13 quic iv", 12)
+  result.client.hp = hdkfExpandLabel(result.client.secret, "tls13 quic hp", 16)
+  result.server.hp = hdkfExpandLabel(result.server.secret, "tls13 quic hp", 16)
 
 
 proc parsePacket*(buf: ptr): Packet =
@@ -220,10 +252,18 @@ proc parsePacket*(buf: ptr): Packet =
     let tokenLen = readVarInt(offset)
     result.initial.token = readSeq(offset, tokenLen)
     let payloadLen = readVarInt(offset)
+
+
+    let initialKeys = getInitialKeys(result.initial)
+    let sample = readSeq(offset+4, 16)
+    echo sample
+
+
     let pnLen = firstByte and 0b00000011 + 1
     result.initial.packetNumber = readPacketNumber(offset, pnLen.int)
     offset = offset + pnLen
     result.initial.payload = readSeq(offset, payloadLen)
+
     discard readFrame(offset)
     # payload only permit CRYPTO, ACK, PING, PADDING, CONNECTION_CLOSE
   of TPacket0RTT:
