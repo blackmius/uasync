@@ -1,9 +1,11 @@
 ## implementation of https://www.ietf.org/rfc/rfc9000.html
 ## QUIC is a name, not an acronym.
+import strutils
 
 import connection_id
-
 import read_utils
+import hdkf
+import protection
 
 # type
 #   Endpoint = enum
@@ -195,9 +197,6 @@ type
       retry: PacketRetry
 
 
-import strutils
-import hdkf
-
 proc readFrame(offset: var ptr): Frame =
   let frameType = read[byte](offset)
   echo frameType.toHex
@@ -253,16 +252,23 @@ proc parsePacket*(buf: ptr): Packet =
     result.initial.token = readSeq(offset, tokenLen)
     let payloadLen = readVarInt(offset)
 
-
     let initialKeys = getInitialKeys(result.initial)
-    let sample = readSeq(offset+4, 16)
-    echo sample
-
-
-    let pnLen = firstByte and 0b00000011 + 1
-    result.initial.packetNumber = readPacketNumber(offset, pnLen.int)
+    let sample = cast[string](readSeq(offset+4, 16))
+    let mask = headerProtection(initialKeys.client.hp, sample)
+    
+    let pnLen = (firstByte xor mask[0].byte) and 0b00000011 + 1
+    result.initial.packetNumber = readPacketNumber(offset, pnLen.int, mask)
     offset = offset + pnLen
+
     result.initial.payload = readSeq(offset, payloadLen)
+    let authtag = readSeq(offset, 16)
+
+    aes128gcmDecrypt(
+      initialKeys.client.key,
+      initialKeys.client.iv,
+      cast[string](result.initial.payload),
+      cast[string](authtag)
+    )
 
     discard readFrame(offset)
     # payload only permit CRYPTO, ACK, PING, PADDING, CONNECTION_CLOSE

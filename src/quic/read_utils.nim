@@ -34,8 +34,8 @@ proc readVarInt*(offset: var ptr): uint64 {.inline.} =
     result = (result shl 8) + cast[ptr uint8](offset)[]
     offset = offset + 1
 
-proc readPacketNumber*(offset: var ptr, len: int): uint64 {.inline.} =
-  result = cast[ptr uint8](offset)[]
-  for _ in 1..<len:
-    result = (result shl 8) + cast[ptr uint8](offset)[]
+proc readPacketNumber*(offset: var ptr, len: int, mask: string): uint64 {.inline.} =
+  result = cast[ptr uint8](offset)[] xor mask[1].uint8
+  for i in 1..<len:
+    result = (result shl 8) + (cast[ptr uint8](offset)[] xor mask[i+1].uint8)
   offset = offset + len

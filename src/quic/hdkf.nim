@@ -1,5 +1,4 @@
 import bearssl
-import strutils
 
 proc hdkfExtract*(salt: string; ikm: string): string =
   ## RFC 5869 section 2.2
@@ -70,6 +69,8 @@ proc hdkfExpandLabel*(key: string; label: string; len: int): string =
   # assert hkdfProduce(h, nil, 0, result[0].addr, result.len.uint) > 0
 
 when isMainModule:
+  import strutils
+
   let initial_salt = "38762cf7f55934b34d179ae6a4c80cadccbb7f0a".parseHexStr
   let initial_random = "0001020304050607".parseHexStr
   let initial_secret = hdkfExtract(initial_salt, initial_random)
