@@ -1,72 +1,30 @@
 import std/[deques, monotimes]
 import times, os, posix
 
-import nimuring
-import yasync
+import pkg/nimuring
+import pkg/cps
 
-## Сохранинение Event в памяти GC
-## Ускоряет общий код на 50%
-## 1. нам не надо теперь хранить rawEnv замыкания
-## 2. не надо выделять и удалять структуры под события
-type
-  Pool[T] = ref object
-    arr: seq[T]
-    freelist: Deque[int]
-
-proc newPool[T](): owned(Pool[T]) =
-  result = new Pool[T]
-
-proc alloc[T](p: var Pool[T]): int =
-  if p.freelist.len == 0:
-    p.arr.add(T())
-    return p.arr.len - 1
-  return p.freelist.popFirst()
-
-proc dealloc[T](p: var Pool[T], ind: int) =
-  p.freelist.addLast(ind)
-
-proc get[T](p: var Pool[T], ind: int): ptr T =
-  result = addr p.arr[ind]
-
-proc waiting[T](p: var Pool[T]): int =
-  result = p.arr.len - p.freelist.len
-
+import pool
 
 type
-  Callback = proc (res: Cqe): bool {.gcsafe, closure.}
-  ## Callback takes Cqe and return should loop dealloc Event
-  ## or we waiting another cqe
-  ## all resubmitting considered to be in that callback
-  Event = object
-    cb: owned(Callback)
+  CqeCont = ref object of Continuation
+    cqe: Cqe
   Loop = ref object
     q: Queue
     sqes: Deque[Sqe]
     cqes: seq[Cqe]
-    callbacks: Deque[proc () {.gcsafe.}]
-    events: Pool[Event]
-
-var gLoop {.threadvar.}: owned Loop
+    events: Pool[Continuation]
+    callbacks: Deque[Continuation]
 
 proc newLoop(): owned Loop =
   result = new(Loop)
   result.q = newQueue(4096, {SETUP_SQPOLL})
   result.sqes = initDeque[Sqe](4096)
   result.cqes = newSeq[Cqe](result.q.params.cqEntries)
-  result.events = newPool[Event]()
+  result.events = newPool[Continuation]()
+  result.callbacks = initDeque[Continuation]()
 
-proc setLoop*(loop: sink Loop) =
-  gLoop = loop
-
-proc getLoop*(): Loop =
-  if gLoop.isNil:
-    setLoop(newLoop())
-  result = gLoop
-
-proc callSoon*(cbproc: proc () {.closure, gcsafe.}) {.gcsafe.} =
-  let loop = getLoop()
-  loop.callbacks.addLast(cbproc)
-    
+var loop = newLoop()
 
 template drainQueue(loop: Loop) =
   while loop.sqes.len != 0:
@@ -74,34 +32,72 @@ template drainQueue(loop: Loop) =
     if sqe.isNil:
       break
     sqe[] = loop.sqes.popFirst()
-
-proc poll*(): bool {.gcsafe, discardable.} =
-  let loop = getLoop()
-  loop.drainQueue()
   discard loop.q.submit()
-  let callbacksCount = loop.callbacks.len
-  for _ in 1..callbacksCount:
-    let cb = loop.callbacks.popFirst()
-    cb()
-  var waitNr: uint = 0
-  if unlikely(loop.callbacks.len > 0):
-    waitNr = loop.q.cqReady()
-  elif likely(loop.events.waiting() > 0):
-    waitNr = 1
-  let ready = loop.q.copyCqes(loop.cqes, waitNr)
-  # new sqes can be added only from callbacks
-  # so it doesn't make sense to skip the iteration
-  for i in 0..<ready:
-    let cqe = loop.cqes[i]
-    let ev = loop.events.get(cqe.userData.int)
-    if likely(not ev.cb(cqe)):
-      loop.events.dealloc(cqe.userData.int)
-  return loop.callbacks.len > 0 or loop.events.waiting() > 0
 
-proc runForever*() {.gcsafe.} =
-  while poll():
-    discard
+template running(loop: Loop): bool =
+  loop.callbacks.len > 0 or loop.events.len > 0
 
+proc run*() =
+  while loop.running():
+    loop.drainQueue()
+    let callbacksCount = loop.callbacks.len
+    for _ in 1..callbacksCount:
+      discard trampoline loop.callbacks.popFirst()
+    let ready = loop.q.copyCqes(loop.cqes)
+    # echo loop.cqes[0], loop.cqes[1], loop.cqes[2]
+    for i in 0..<ready:
+      var cqe = loop.cqes[i]
+      echo cqe
+      var index = cqe.userData.int
+      var q = CqeCont loop.events[index]
+      q.cqe = cqe
+      var c: Continuation = q
+      discard trampoline c
+      loop.events.free(index)
+
+template callSoon*(c: typed) =
+  loop.callbacks.addLast(Continuation whelp c)
+
+proc sqe*(): ptr Sqe {.inline.} =
+  result = loop.q.getSqe()
+  if result.isNil:
+    loop.sqes.addLast(Sqe())
+    result = addr loop.sqes.peekLast()
+
+proc event(c: CqeCont, sqe: ptr Sqe): CqeCont {.cpsMagic.} =
+  let index = loop.events.add(Continuation c)
+  sqe.setUserData(index)
+  return nil
+
+proc data(c: CqeCont): Cqe {.cpsVoodoo.} =
+  c.cqe
+
+proc submit*(sqe: ptr Sqe): Cqe {.cps: CqeCont.} =
+  event(sqe)
+  data()
+
+template asyncio*(prc: typed): untyped =
+  cps(Continuation, prc)
+
+proc nop*() {.asyncio.} =
+  let cqe = submit sqe().nop()
+  if cqe.res < 0:
+    raise newException(OSError, osErrorMsg(OSErrorCode(cqe.res)))
+
+# var d: CqeCont
+
+# proc test2(c: CqeCont): CqeCont {.cpsMagic.} =
+#   d = c
+#   return nil
+
+# proc test() {.cps: CqeCont.} =
+#   echo "1"
+#   test2()
+#   echo "2"
+
+# discard trampoline whelp test()
+# discard trampoline d
+#[
 type AsyncFD* = distinct int
 
 proc event*(cb: Callback): ptr Sqe {.discardable, inline.} =
@@ -306,3 +302,4 @@ proc sleepAsync*(ms: int | float): owned(Future[void]) =
 
 export yasync
 export Cqe
+]#
