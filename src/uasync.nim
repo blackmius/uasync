@@ -86,13 +86,11 @@ template asyncio*(prc: typed): untyped =
 
 proc checkCqe*(cqe: Cqe): Cqe {.discardable, inline.} =
   if cqe.res < 0:
-    raise newException(OSError, osErrorMsg(OSErrorCode(cqe.res)))
+    raise (ref OSError)(msg: osErrorMsg(OSErrorCode(-cqe.res)), errorCode: -cqe.res)
   cqe
 
 proc nop*() {.asyncio.} =
-  let cqe = submit sqe().nop()
-  if cqe.res < 0:
-    raise newException(OSError, osErrorMsg(OSErrorCode(cqe.res)))
+  checkCqe submit sqe().nop()
 
 proc sleepImpl*(ms: int | float) =
   if ms <= 0:
@@ -111,3 +109,7 @@ proc sleep(ms: int) {.asyncio.} =
   sleepImpl(ms)
 proc sleep(ms: float) {.asyncio.} =
   sleepImpl(ms)
+
+# XXX: how to syncronize continuations?
+# await all, one, race, with errors, ...
+# cancel continuation?

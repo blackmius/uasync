@@ -1,9 +1,9 @@
-import std/[os, posix, nativesockets]
+import std/[os, posix, nativesockets, net]
 import pkg/cps
 import pkg/nimuring
 import uasync
 
-export Domain, SockType, Protocol
+export Domain, SockType, Protocol, SOBool
 
 type Socket* = object
   fd: SocketHandle
@@ -64,12 +64,17 @@ proc listen*(sock: Socket, backlog=SOMAXCONN) =
   if nativesockets.listen(sock.fd, backlog) < 0'i32:
     raiseOSError(osLastError())
 
-proc bindAddr*(sock: Socket, port = Port(0), address = "0.0.0.0") =
-  var ai = getAddrInfo(address, port)
+proc bindAddr*(sock: Socket, port: int = 0, address = "0.0.0.0") =
+  var ai = getAddrInfo(address, port.Port)
   let res = bindAddr(sock.fd, ai.ai_addr, ai.ai_addrlen.SockLen)
   freeAddrInfo(ai)
   if res < 0:
     raiseOSError(osLastError())
+
+proc setSockOpt*(socket: Socket, opt: SOBool, value: bool,
+  level = SOL_SOCKET) =
+  var valuei = cint(if value: 1 else: 0)
+  setSockOptInt(socket.fd, cint(level), toCInt(opt), valuei)
 
 proc close*(sock: Socket) {.asyncio.} =
   checkCqe submit sqe().close(sock.fd)
@@ -107,25 +112,3 @@ proc recvmsg*(fd: AsyncFD; size: int): owned(Future[ref Msg]) =
 
   discard event(cb).recvmsg(cast[SocketHandle](fd), cast[ptr Tmsghdr](tmsg), 0)
 ]#
-
-proc listener(s: Socket) {.cps: Continuation.} =
-  while true:
-    let c = s.accept()
-    echo "new connection"
-    sleep(1000)
-    c.close()
-
-proc test() {.cps: Continuation.} =
-  let s = newSocket()
-  s.bindAddr(8000.Port)
-  s.listen()
-  for i in 0..16:
-    spawn listener(s)
-  jield()
-  echo "deleting socket"
-  # s.connect("google.com", 80)
-  # s.send("GET / HTTP 1.1\n\n")
-  # let q = s.recv(100)
-  # echo q
-test()
-run()
