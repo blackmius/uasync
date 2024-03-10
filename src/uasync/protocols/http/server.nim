@@ -1,6 +1,7 @@
 import std/httpcore
 import std/options
 import std/strutils
+import std/parseutils
 import std/uri
 from std/httpclient import ProtocolError, HttpRequestError
 import pkg/cps
@@ -14,30 +15,57 @@ type
   HttpServer* = ref object
     socket: Socket
   Request* = ref object
+    socket: Socket
     buffer: string
-    meth: string
-    path: string
-    headers: HttpHeaders
+    bufpos: int
+    contentLength: int
+    meth*: string
+    path*: string
+    headers*: HttpHeaders
   ResponseType = enum
     Text
   Response* = ref object
-    status: int
+    statusCode: int
     msg: string
     headers: HttpHeaders
     case t: ResponseType
     of Text:
       data: string
-  HttpHandler* = proc (req: Request): Response {.asyncio.}
+  HttpHandler* = proc (req: Request): Response {.cps: Continuation.}
 
 const
   BUFFER_LEN = 1024
   MAX_HEADERS = 100
 
+func text*(T: type Response, data: string): Response =
+  result = new Response
+  result.t = Text
+  result.data = data
+
+func status*(T: type Response, data: int): Response =
+  result = new Response
+  result.statusCode = data
+
+proc read*(req: Request, size: int): string {.cps: Continuation.} =
+  while true:
+    if req.buffer.len >= size:
+      req.bufPos += size
+      let data = req.buffer[0..size]
+      req.buffer = req.buffer[size..^1]
+      return data
+    if req.bufPos + req.buffer.len == req.contentLength:
+      req.bufPos = req.contentLength
+      let data = req.buffer
+      req.buffer = ""
+      return data
+    req.buffer.add req.socket.recv(BUFFER_LEN)
+
 proc newHttpServer*(): HttpServer =
   new result
 
-proc readRequest(client: Socket): Request {.asyncio.} =
+proc readRequest(client: Socket): Request {.cps: Continuation.} =
   result = new Request
+  result.socket = client
   var headersCount: csize_t
   var headers: array[MAX_HEADERS, picohttpparser.Header]
   var meth: cstring
@@ -76,16 +104,17 @@ proc readRequest(client: Socket): Request {.asyncio.} =
     var val = newString(headers[i].valueLen)
     copyMem(addr val[0], headers[i].value, headers[i].valueLen)
     result.headers.add(move(key), move(val))
+  
+  if not result.headers.isNil and result.headers.hasKey("Content-Length"):
+    discard result.headers["Content-Length"].parseSaturatedNatural(result.contentLength)
 
-proc handleResponse(client: Socket, res: Response) {.asyncio.} =
-  if res.status == 0:
-    res.status = 200
+proc handleResponse(client: Socket, res: Response) {.cps: Continuation.} =
+  if res.statusCode == 0:
+    res.statusCode = 200
   if res.msg == "":
-    res.msg = $(res.status.HttpCode)
+    res.msg = $(res.statusCode.HttpCode)
   var resBuffer = "HTTP/1.1 "
   # XXX: can be made without allocation
-  resBuffer.add $res.status
-  resBuffer.add ' '
   resBuffer.add res.msg
   resBuffer.add httpNewLine
   if not res.headers.isNil:
@@ -100,7 +129,17 @@ proc handleResponse(client: Socket, res: Response) {.asyncio.} =
     resBuffer.add res.data
   client.send(resBuffer)
 
-proc listen*(server: HttpServer, port: int, handler: HttpHandler) {.asyncio.} =
+proc handle(client: Socket, handler: HttpHandler) {.cps: Continuation.} =
+  let req = client.readRequest()
+  var res: Response
+  try:
+    res = handler(req)
+  except Exception as e:
+    res = Response.status(500)
+  client.handleResponse(res)
+  client.close()
+
+proc listen*(server: HttpServer, port: int, handler: HttpHandler) {.cps: Continuation.} =
   # XXX: make simple tcp server and reuse it
   server.socket = newSocket()
   server.socket.setSockOpt(OptReusePort, true)
@@ -109,19 +148,11 @@ proc listen*(server: HttpServer, port: int, handler: HttpHandler) {.asyncio.} =
   server.socket.listen()
   while true:
     let client = server.socket.accept()
-    let req = client.readRequest()
-    var res = handler(req)
-    client.handleResponse(res)
-    client.close()
-
-func text*(T: type Response, data: string): Response =
-  result = new Response
-  result.t = Text
-  result.data = data
+    spawn handle(client, handler)
 
 when isMainModule:
-  let client = newHttpServer()
+  let server = newHttpServer()
   proc handler(req: Request): Response {.asyncio.} =
     return Response.text("Hello, World\n")
-  client.listen(8080, whelp handler)
+  server.listen(8080, whelp handler)
   run()

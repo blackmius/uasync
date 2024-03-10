@@ -1,3 +1,5 @@
+# XXX: https://github.com/axboe/liburing/wiki/io_uring-and-networking-in-2023
+
 import std/[os, posix, nativesockets, net]
 import pkg/cps
 import pkg/nimuring
