@@ -1,6 +1,8 @@
-{.compile: "picohttpparser.c"}
+import strutils, os
 
-{.push header: "picohttpparser.h".}
+const srcPath = currentSourcePath.rsplit(DirSep, 1)[0]
+{.compile: srcPath & "/picohttpparser.c"}
+{.push header: srcPath & "/picohttpparser.h".}
 
 type
   Header* {.importc: "struct phr_header", bycopy.} = object

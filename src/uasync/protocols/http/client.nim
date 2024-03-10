@@ -5,7 +5,7 @@ import std/uri
 from std/httpclient import ProtocolError, HttpRequestError
 import pkg/cps
 
-import ../../uasync
+import ../../loop
 import ../../socket
 import picohttpparser
 
